@@ -72,7 +72,7 @@ class TexasHoldemGame:
         pass
 
     def _bot_action(self, player: Player, call_amount: int) -> str:
-        # TODO: Task 7 - implement a simple bot strategy based on the 
+        # TODO: Task 7 - implement a simple bot strategy based on the
         # call amount relative to the player's chips
         pass
 

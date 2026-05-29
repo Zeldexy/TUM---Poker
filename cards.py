@@ -81,4 +81,3 @@ class Deck:
                 drawn.append(self._cards.pop())
 
         return drawn
-
