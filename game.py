@@ -11,32 +11,59 @@ from ui import ConsoleUI
 
 class TexasHoldemGame:
     def __init__(self, players: list[Player], small_blind: int = 5, big_blind: int = 10) -> None:
-        # TODO: Task 1 - check that there are at least 2 players, and if so, 
-        # initialize the game state with the players, blinds, table, hand evaluator, and UI
-        pass
+        if len(players) < 2:
+            raise ValueError("There must be at least 2 players to start the game.")
+        self.players = players
+        self.small_blind = small_blind
+        self.big_blind = big_blind
+        self.table = Table()
+        self.evaluator = HandEvaluator()
+        self.ui = ConsoleUI()
 
     def play_hand(self) -> None:
-        # TODO: Task 2 - implement the main game loop for a single hand of Texas Hold'em, following the 
-        # standard sequence of actions (create new Deck, reset table, reset all players, deal two cards to each player, 
-        # post blinds, deal (flop, turn, river), run betting rounds, and showdown)
-        # NOTE: many of these actions are custom methods
-        pass
+        deck = Deck()
+        self.table.reset()
+        
+        for player in self.players:
+            player.reset_for_hand()
+        for player in self.players:
+            hole_cards = deck.draw(2)
+            player.receive(hole_cards)
+        self._post_blinds()
+        self._show_human_cards()
+        self._betting_round("Pre-Flop")
+        self._deal_community(deck, 3, "Flop")
+        self._betting_round("Flop")
+        self._deal_community(deck, 1, "Turn")
+        self._betting_round("Turn")
+        self._deal_community(deck, 1, "River")
+        self._betting_round("River")
+        self._showdown()
 
     def _post_blinds(self) -> None:
-        # TODO: Task 3 - have the first two players post the small and big blinds, 
-        # respectively, add those amounts to the pot, 
-        # and display the message as "[name] posts [small]; [name] posts [big]"
-        pass
+        if len(self.players) < 2:
+            raise ValueError("There must be at least 2 players to post blinds.")
+        self.players[0].bet(self.small_blind)
+        self.players[1].bet(self.big_blind)
+        self.table.pot += self.small_blind + self.big_blind
+        print(f"{self.players[0].name} posts {self.small_blind}; {self.players[1].name} posts {self.big_blind}")
+        print()  # Add an extra line for better readability        
 
     def _show_human_cards(self) -> None:
-        # TODO: Task 4 - display the hole cards of all human players, e.g. "Alice: AH KH"
-        pass
+        for player in self.players:
+            if player.is_human:
+                self.ui.show_player(player)
+                print()  # Add an extra line for better readability
 
     def _deal_community(self, deck: Deck, count: int, street: str) -> None:
-        # TODO: Task 5 - stop if one player remains, deal the specified number of community 
-        # cards from the deck, add them to the table, and display the message as "\n-- [Street] --"
-        # HINT: use the extend method of the list to add the new cards to the existing community cards
-        pass
+        if self._only_one_player_left():
+            return
+        new_cards = deck.draw(count)
+        self.table.community_cards.extend(new_cards)
+        print()  # Add an extra line for better readability
+        print(f"-- {street} --")
+        self.ui.show_table(self.table.community_cards, self.table.pot)
+        print()  # Add an extra line for better readability
 
     def _betting_round(self, street: str) -> None:
         # TODO: Task 6 - implement the betting round for the specified street, where each 
@@ -56,5 +83,14 @@ class TexasHoldemGame:
         pass
 
     def _only_one_player_left(self) -> bool:
-        # TODO: Task 9 - return True if only one player is still active and False otherwise
-        pass
+        active_players = [player for player in self.players if player.active]
+        return len(active_players) == 1
+
+players = [
+    Player(name="Lukas", chips=1000, is_human=True),
+    Player(name="Bob", chips=1000),
+    Player(name="Charlie", chips=1000),
+]
+
+game = TexasHoldemGame(players)
+game.play_hand()
