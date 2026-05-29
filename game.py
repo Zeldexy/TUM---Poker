@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bot import BotBrain
 from cards import Deck
 from evaluator import HandEvaluator
 from player import Player
@@ -21,6 +22,9 @@ class TexasHoldemGame:
         self.table = Table()
         self.evaluator = HandEvaluator()
         self.ui = ConsoleUI()
+        self.bot_brain = BotBrain(simulations=1000)
+        message = "Welcome to the Premium Poker Suite! We pride ourselves on providing a secure, professional, and exhilarating card-playing environment. We highly encourage you to play strategically, master your poker face, and execute daring bluffs! It really makes the mathematically unavoidable process of our algorithm politely absorbing your entire net worth so much more entertaining for everyone involved. Good luck, and may the odds be entirely in our favor!"
+        self.ui.show_message(message)
 
     def play_hand(self) -> None:
         deck = Deck()
@@ -31,7 +35,9 @@ class TexasHoldemGame:
         for player in self.players:
             hole_cards = deck.draw(2)
             player.receive(hole_cards)
+
         self._post_blinds()
+        self._show_players_chips()
         self._show_human_cards()
         self._betting_round("Pre-Flop")
         self._deal_community(deck, 3, "Flop")
@@ -52,6 +58,11 @@ class TexasHoldemGame:
             f"{self.players[0].name} posts {actual_small}; {self.players[1].name} posts {actual_big}"
         )
         print()  # Add an extra line for better readability
+
+    def _show_players_chips(self) -> None:
+        for player in self.players:
+            print(f"{player.name}: {player.chips} chips")
+        print()
 
     def _show_human_cards(self) -> None:
         for player in self.players:
@@ -79,7 +90,9 @@ class TexasHoldemGame:
         while True:
             # A player is settled if they folded, are all-in, or have acted and matched the highest bet
             all_settled = all(
-                p.folded or p.chips == 0 or (p.name in acted and p.current_bet == highest_bet)
+                p.folded
+                or p.chips == 0
+                or (p.name in acted and p.current_bet == highest_bet)
                 for p in self.players
             )
             if all_settled:
@@ -123,7 +136,13 @@ class TexasHoldemGame:
                 elif action == "raise":
                     minimum = call_amount + self.big_blind
                     maximum = player.chips
-                    raise_amount = self.ui.ask_raise_amount(minimum, maximum)
+                    if player.is_human:
+                        raise_amount = self.ui.ask_raise_amount(minimum, maximum)
+                    else:
+                        # Bots must size their own raise. Never prompt the
+                        # console here or the human gets asked to type in a
+                        # bot's raise amount.
+                        raise_amount = self._bot_raise_amount(minimum, maximum)
                     wager = player.bet(call_amount + raise_amount)
                     self.table.add_to_pot(wager)
                     highest_bet = player.current_bet
@@ -140,16 +159,35 @@ class TexasHoldemGame:
             player.current_bet = 0
 
     def _bot_action(self, player: Player, call_amount: int) -> str:
-        if call_amount > player.chips / 2:
-            return "fold"
-        return "call"
+        active_players = [p for p in self.players if not p.folded]
+        position_index = active_players.index(player)
+        total_active = len(active_players)
+
+        return self.bot_brain.decide(
+            hole_cards=player.hole_cards,
+            community_cards=self.table.community_cards,
+            pot=self.table.pot,
+            call_amount=call_amount,
+            player_chips=player.chips,
+            position_index=position_index,
+            total_active_players=total_active,
+        )
+
+    def _bot_raise_amount(self, minimum: int, maximum: int) -> int:
+        # Bots raise a fixed, modest size: the minimum legal raise. When they
+        # cannot afford even that, they shove whatever chips remain (all-in).
+        if maximum < minimum:
+            return maximum
+        return minimum
 
     def _showdown(self) -> None:
         # Scenario 1: everyone else folded, last player wins
         if self._only_one_player_left():
             winner = [p for p in self.players if not p.folded][0]
             winner.chips += self.table.pot
-            self.ui.show_message(f"{winner.name} wins {self.table.pot} chips (everyone else folded).")
+            self.ui.show_message(
+                f"{winner.name} wins {self.table.pot} chips (everyone else folded)."
+            )
             return
 
         # Scenario 2: evaluate hands of all remaining players
@@ -175,20 +213,14 @@ class TexasHoldemGame:
             winner.chips += share
 
         if len(winners) == 1:
-            self.ui.show_message(f"{winners[0].name} wins {self.table.pot} chips with {best_rank}!")
+            self.ui.show_message(
+                f"{winners[0].name} wins {self.table.pot} chips with {best_rank}!"
+            )
         else:
             names = ", ".join(w.name for w in winners)
-            self.ui.show_message(f"Tie! {names} split the pot ({share} chips each) with {best_rank}.")
+            self.ui.show_message(
+                f"Tie! {names} split the pot ({share} chips each) with {best_rank}."
+            )
 
     def _only_one_player_left(self) -> bool:
         return sum(1 for p in self.players if not p.folded) == 1
-
-
-players = [
-    Player(name="Lukas", chips=1000, is_human=True),
-    Player(name="Bob", chips=1000),
-    Player(name="Charlie", chips=1000),
-]
-
-game = TexasHoldemGame(players)
-game.play_hand()

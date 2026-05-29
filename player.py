@@ -43,10 +43,3 @@ class Player:
             return True
         else:
             return False
-
-
-# Optional extension
-# •  Add an all_in() method.
-# •  Track each player’s total winnings across multiple hands.
-# •  Add player statistics such as win rate.
-# •  Create a meaningful string representation using __repr__ or __str__.
