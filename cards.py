@@ -56,6 +56,7 @@ class Rank(IntEnum):
             Rank.ACE: "A",
         }[self]
 
+
 @dataclass(frozen=True)
 class Card:
     rank: Rank

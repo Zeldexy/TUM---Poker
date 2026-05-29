@@ -16,7 +16,6 @@ class Player:
     current_bet: int = 0
     folded: bool = False
 
-
     def reset_for_hand(self) -> None:
         self.hole_cards.clear()
         self.current_bet = 0
@@ -27,21 +26,27 @@ class Player:
         pass
 
     def bet(self, amount: int) -> int:
-
         if amount < 0:
-            raise ValueError("bet amount cannot be negative")
-        if amount > self.chips:
-            raise ValueError("not enough chips to bet that amount")
-        
-        self.chips -= amount
-        self.current_bet += amount
-        return self.current_bet
+            raise ValueError("Bet amount cannot be negative")
+
+        bet = min(amount, self.chips)
+        self.chips -= bet
+        self.current_bet += bet
+        return bet
+
+    def all_in(self) -> int:
+        return self.bet(self.chips)
 
     @property
     def active(self) -> bool:
-
         if not self.folded and self.chips > 0:
             return True
         else:
             return False
 
+
+# Optional extension
+# •  Add an all_in() method.
+# •  Track each player’s total winnings across multiple hands.
+# •  Add player statistics such as win rate.
+# •  Create a meaningful string representation using __repr__ or __str__.

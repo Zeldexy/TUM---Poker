@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from cards import Card
 
+
 @dataclass
 class Table:
     pot: int = 0
@@ -17,6 +18,5 @@ class Table:
 
     def add_to_pot(self, amount: int) -> None:
         if amount < 0:
-            raise ValueError("amount to add to pot cannot be negative")
+            raise ValueError("Amount to add to pot cannot be negative")
         self.pot += amount
-

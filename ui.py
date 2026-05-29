@@ -32,18 +32,21 @@ class ConsoleUI:
 
     
     def ask_action(self, player: Player, call_amount: int) -> str:
-        action = input(f"{player.name}, you need to call {call_amount} chips. Do you want to call/check, raise, or fold? ").strip().lower()
+        action = input(f"{player.name}, you need to call {call_amount} chips. Do you want to call/check, raise, all in, or fold? ").strip().lower()
         if action in ["c", "call", "check"]:
             return 'call'
-        
+
         elif action in ["r", "raise"]:
             return 'raise'
-        
+
+        elif action in ["a", "all in", "allin"]:
+            return 'all in'
+
         elif action in ["f", "fold"]:
             return 'fold'
-        
+
         else:
-            print("Invalid action. Please enter 'call', 'raise', or 'fold'.")
+            print("Invalid action. Please enter 'call', 'raise', 'all in', or 'fold'.")
             return self.ask_action(player, call_amount)
         
 

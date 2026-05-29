@@ -10,7 +10,9 @@ from ui import ConsoleUI
 
 
 class TexasHoldemGame:
-    def __init__(self, players: list[Player], small_blind: int = 5, big_blind: int = 10) -> None:
+    def __init__(
+        self, players: list[Player], small_blind: int = 5, big_blind: int = 10
+    ) -> None:
         if len(players) < 2:
             raise ValueError("There must be at least 2 players to start the game.")
         self.players = players
@@ -23,7 +25,7 @@ class TexasHoldemGame:
     def play_hand(self) -> None:
         deck = Deck()
         self.table.reset()
-        
+
         for player in self.players:
             player.reset_for_hand()
         for player in self.players:
@@ -43,11 +45,13 @@ class TexasHoldemGame:
     def _post_blinds(self) -> None:
         if len(self.players) < 2:
             raise ValueError("There must be at least 2 players to post blinds.")
-        self.players[0].bet(self.small_blind)
-        self.players[1].bet(self.big_blind)
-        self.table.pot += self.small_blind + self.big_blind
-        print(f"{self.players[0].name} posts {self.small_blind}; {self.players[1].name} posts {self.big_blind}")
-        print()  # Add an extra line for better readability        
+        actual_small = self.players[0].bet(self.small_blind)
+        actual_big = self.players[1].bet(self.big_blind)
+        self.table.add_to_pot(actual_small + actual_big)
+        print(
+            f"{self.players[0].name} posts {actual_small}; {self.players[1].name} posts {actual_big}"
+        )
+        print()  # Add an extra line for better readability
 
     def _show_human_cards(self) -> None:
         for player in self.players:
@@ -66,25 +70,119 @@ class TexasHoldemGame:
         print()  # Add an extra line for better readability
 
     def _betting_round(self, street: str) -> None:
-        # TODO: Task 6 - implement the betting round for the specified street, where each 
-        # active player can choose to fold, call, or raise -> ensure that each action works
-        # NOTE: this is a big task
-        pass
+        if self._only_one_player_left():
+            return
+
+        highest_bet = max(p.current_bet for p in self.players)
+        acted = set()
+
+        while True:
+            # A player is settled if they folded, are all-in, or have acted and matched the highest bet
+            all_settled = all(
+                p.folded or p.chips == 0 or (p.name in acted and p.current_bet == highest_bet)
+                for p in self.players
+            )
+            if all_settled:
+                break
+
+            for player in self.players:
+                if player.folded or player.chips == 0:
+                    continue
+                if self._only_one_player_left():
+                    break
+
+                call_amount = highest_bet - player.current_bet
+
+                # Skip if this player already acted and matches the highest bet
+                if player.name in acted and call_amount == 0:
+                    continue
+
+                # Check if the player is a human or a bot
+                if player.is_human:
+                    self.ui.show_table(self.table.community_cards, self.table.pot)
+                    self.ui.show_player(player)
+                    action = self.ui.ask_action(player, call_amount)
+                else:
+                    action = self._bot_action(player, call_amount)
+
+                acted.add(player.name)
+
+                # Check the action chosen
+                if action == "fold":
+                    player.folded = True
+                    self.ui.show_message(f"{player.name} folds.")
+
+                elif action == "call":
+                    wager = player.bet(call_amount)
+                    self.table.add_to_pot(wager)
+                    if call_amount == 0:
+                        self.ui.show_message(f"{player.name} checks.")
+                    else:
+                        self.ui.show_message(f"{player.name} calls {wager}.")
+
+                elif action == "raise":
+                    minimum = call_amount + self.big_blind
+                    maximum = player.chips
+                    raise_amount = self.ui.ask_raise_amount(minimum, maximum)
+                    wager = player.bet(call_amount + raise_amount)
+                    self.table.add_to_pot(wager)
+                    highest_bet = player.current_bet
+                    self.ui.show_message(f"{player.name} raises by {raise_amount}.")
+
+                elif action == "all in":
+                    wager = player.all_in()
+                    self.table.add_to_pot(wager)
+                    if player.current_bet > highest_bet:
+                        highest_bet = player.current_bet
+                    self.ui.show_message(f"{player.name} goes all in for {wager}!")
+
+        for player in self.players:
+            player.current_bet = 0
 
     def _bot_action(self, player: Player, call_amount: int) -> str:
-        # TODO: Task 7 - implement a simple bot strategy based on the
-        # call amount relative to the player's chips
-        pass
+        if call_amount > player.chips / 2:
+            return "fold"
+        return "call"
 
     def _showdown(self) -> None:
-        # TODO: Task 8 - if only one player remains, they win the pot; 
-        # otherwise, evaluate the hands of all active players
-        # NOTE: this is a big task
-        pass
+        # Scenario 1: everyone else folded, last player wins
+        if self._only_one_player_left():
+            winner = [p for p in self.players if not p.folded][0]
+            winner.chips += self.table.pot
+            self.ui.show_message(f"{winner.name} wins {self.table.pot} chips (everyone else folded).")
+            return
+
+        # Scenario 2: evaluate hands of all remaining players
+        remaining = [p for p in self.players if not p.folded]
+        player_ranks = []
+        for player in remaining:
+            cards = player.hole_cards + self.table.community_cards
+            rank = self.evaluator.best_rank(cards)
+            player_ranks.append((player, rank))
+            self.ui.show_message(
+                f"{player.name}: {self.ui.format_cards(player.hole_cards)} - {rank}"
+            )
+
+        # Find the best hand
+        best_rank = max(rank for _, rank in player_ranks)
+
+        # Collect all players who tied for the best hand
+        winners = [p for p, rank in player_ranks if rank == best_rank]
+
+        # Split the pot among winners
+        share = self.table.pot // len(winners)
+        for winner in winners:
+            winner.chips += share
+
+        if len(winners) == 1:
+            self.ui.show_message(f"{winners[0].name} wins {self.table.pot} chips with {best_rank}!")
+        else:
+            names = ", ".join(w.name for w in winners)
+            self.ui.show_message(f"Tie! {names} split the pot ({share} chips each) with {best_rank}.")
 
     def _only_one_player_left(self) -> bool:
-        active_players = [player for player in self.players if player.active]
-        return len(active_players) == 1
+        return sum(1 for p in self.players if not p.folded) == 1
+
 
 players = [
     Player(name="Lukas", chips=1000, is_human=True),
