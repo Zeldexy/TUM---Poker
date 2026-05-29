@@ -10,25 +10,38 @@ from cards import Card
 @dataclass
 class Player:
     name: str
-    # TODO: Task 1 - add chips, is_human, hole_cards, current_bet, and folded
+    chips: int
+    is_human: bool = False
+    hole_cards: list = field(default_factory=list)
+    current_bet: int = 0
+    folded: bool = False
+
 
     def reset_for_hand(self) -> None:
-        # TODO: Task 2 - reset the player's state for a new hand
-        pass
+        self.hole_cards.clear()
+        self.current_bet = 0
+        self.folded = False
 
     def receive(self, cards: list[Card]) -> None:
-        # TODO: Task 3 - add the received cards to the player's hole cards
+        self.hole_cards.extend(cards)
         pass
 
     def bet(self, amount: int) -> int:
-        # TODO: Task 4 - check if the player has enough chips to bet the specified amount, 
-        # and if so, deduct the amount from the player's chips and add it to the current bet
+
         if amount < 0:
-            pass
-        pass 
+            raise ValueError("bet amount cannot be negative")
+        if amount > self.chips:
+            raise ValueError("not enough chips to bet that amount")
+        
+        self.chips -= amount
+        self.current_bet += amount
+        return self.current_bet
 
     @property
     def active(self) -> bool:
-        # TODO: Task 5 - return True if the player is still active in the hand
-        pass
+
+        if not self.folded and self.chips > 0:
+            return True
+        else:
+            return False
 
