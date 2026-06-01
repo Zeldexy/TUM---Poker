@@ -97,6 +97,6 @@ class HandEvaluator:
         s = sorted(ranks)
         if s == list(range(s[0], s[0] + 5)):
             return s[-1]
-        if s == [2, 3, 4, 5, 14]:  # Ace-low straight
+        if s == [2, 3, 4, 5, 14]:
             return 5
         return None

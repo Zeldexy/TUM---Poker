@@ -57,13 +57,13 @@ class TexasHoldemGame:
         self.history.log_action(self.players[1].name, "big_blind", self.big_blind, "Pre-Flop")
 
         print(f"{self.players[0].name} posts {self.small_blind}; {self.players[1].name} posts {self.big_blind}")
-        print()  # Add an extra line for better readability
+        print()
 
     def _show_human_cards(self) -> None:
         for player in self.players:
             if player.is_human:
                 self.ui.show_player(player)
-                print()  # Add an extra line for better readability
+                print()
 
     def _deal_community(self, deck: Deck, count: int, street: str) -> None:
         if self._only_one_player_left():
@@ -73,15 +73,12 @@ class TexasHoldemGame:
 
         self.history.log_community_cards(street, new_cards)
 
-        print()  # Add an extra line for better readability
+        print()
         print(f"-- {street} --")
         self.ui.show_table(self.table.community_cards, self.table.pot)
-        print()  # Add an extra line for better readability
+        print()
 
     def _betting_round(self, street: str) -> None:
-        # TODO: Task 6 - implement the betting round for the specified street, where each
-        # active player can choose to fold, call, or raise -> ensure that each action works
-        # NOTE: this is a big task
         if self._only_one_player_left():
             return
 
@@ -238,8 +235,6 @@ class TexasHoldemGame:
                 break
 
     def _bot_action(self, player: Player, call_amount: int) -> str:
-        # TODO: Task 7 - implement a simple bot strategy based on the
-        # call amount relative to the player's chips
         if call_amount == 0:
             return "check"
 
