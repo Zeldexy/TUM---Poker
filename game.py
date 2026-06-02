@@ -1,9 +1,21 @@
-"""Main Texas Hold'em game loop."""
+"""Main Texas Hold'em game loop.
+
+The hand is driven by a generator (``_run_hand``) that yields a
+``DecisionRequest`` whenever a human must act and is resumed with an
+``ActionResponse`` via ``.send()``. ``play_hand()`` is the console driver that
+backs those requests with ``ConsoleUI``; the web backend drives the same
+generator and backs them with client messages. Bots resolve synchronously
+inside the engine and never yield. Output goes through ``self.ui`` so it can be
+printed (console) or buffered (headless/web).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Generator
+
 from bot import BotBrain
 from cards import Deck
+from engine_events import ActionResponse, DecisionRequest, Tick
 from evaluator import HandEvaluator, HandRank
 from hand_history import HandHistoryLogger
 from player import Player
@@ -13,7 +25,11 @@ from ui import ConsoleUI
 
 class TexasHoldemGame:
     def __init__(
-        self, players: list[Player], small_blind: int = 5, big_blind: int = 10
+        self,
+        players: list[Player],
+        small_blind: int = 5,
+        big_blind: int = 10,
+        ui=None,
     ) -> None:
         if len(players) < 2:
             raise ValueError("There must be at least 2 players to start the game.")
@@ -22,7 +38,10 @@ class TexasHoldemGame:
         self.big_blind = big_blind
         self.table = Table()
         self.evaluator = HandEvaluator()
-        self.ui = ConsoleUI()
+        # ConsoleUI by default; the web backend injects a HeadlessUI that buffers
+        # output instead of printing. The engine only depends on show_message /
+        # show_table / show_player / format_cards.
+        self.ui = ui if ui is not None else ConsoleUI()
         self.hand_number = 0
         # Index into self.players of the dealer button. The small blind sits one
         # seat left of the button and the big blind two seats left, so starting
@@ -33,7 +52,48 @@ class TexasHoldemGame:
         self.history = HandHistoryLogger()
         self.bot_brain = BotBrain(simulations=1000)
 
+    # ------------------------------------------------------------------ #
+    # Drivers
+    # ------------------------------------------------------------------ #
+
     def play_hand(self) -> None:
+        """Console driver: run one hand, answering human turns via ConsoleUI."""
+        runner = self._run_hand()
+        try:
+            event = next(runner)  # prime the generator up to the first event
+            while True:
+                if isinstance(event, DecisionRequest):
+                    event = runner.send(self._console_respond(event))
+                else:  # Tick — refresh point; the console renders inline already
+                    event = runner.send(None)
+        except StopIteration:
+            pass
+
+        # Separate finished hands in the console log so games are easy to track.
+        print()
+        print()
+        print("-" * 40)
+        print()
+        print()
+
+    def _console_respond(self, request: DecisionRequest) -> ActionResponse:
+        player = self.players[request.seat]
+        action = self.ui.ask_action(player, request.call_amount, request.can_raise)
+        if action != "raise":
+            return ActionResponse(action)
+        if request.min_raise_increment > request.max_raise_increment:
+            # Not enough chips for a full legal raise; the only raise is all-in.
+            return ActionResponse("raise", request.max_raise_increment)
+        increment = self.ui.ask_raise_amount(
+            request.min_raise_increment, request.max_raise_increment
+        )
+        return ActionResponse("raise", increment)
+
+    # ------------------------------------------------------------------ #
+    # Hand orchestration (generator)
+    # ------------------------------------------------------------------ #
+
+    def _run_hand(self) -> Generator[DecisionRequest | Tick, ActionResponse | None, None]:
         # Drop players who busted in a previous hand. A 0-chip player can't post
         # a blind, can't be dealt in, and must not ride to showdown for free.
         # Keeping them in is what let a broke player keep winning pots and
@@ -69,13 +129,18 @@ class TexasHoldemGame:
         self._post_blinds()
         self._show_players_chips()
         self._show_human_cards()
-        self._betting_round("Pre-Flop")
+        # Reveal the freshly dealt hand (blinds, hole cards) before betting.
+        yield Tick()
+        yield from self._betting_round("Pre-Flop")
         self._deal_community(deck, 3, "Flop")
-        self._betting_round("Flop")
+        yield Tick()
+        yield from self._betting_round("Flop")
         self._deal_community(deck, 1, "Turn")
-        self._betting_round("Turn")
+        yield Tick()
+        yield from self._betting_round("Turn")
         self._deal_community(deck, 1, "River")
-        self._betting_round("River")
+        yield Tick()
+        yield from self._betting_round("River")
         self._showdown()
 
         # Move the button one seat clockwise for the next hand.
@@ -100,21 +165,18 @@ class TexasHoldemGame:
         self.history.log_action(small_blind_player.name, "small_blind", actual_small, "Pre-Flop")
         self.history.log_action(big_blind_player.name, "big_blind", actual_big, "Pre-Flop")
 
-        print(
+        self.ui.show_message(
             f"{small_blind_player.name} posts {actual_small}; {big_blind_player.name} posts {actual_big}"
         )
-        print()  # Add an extra line for better readability
 
     def _show_players_chips(self) -> None:
         for player in self.players:
-            print(f"{player.name}: {player.chips} chips")
-        print()
+            self.ui.show_message(f"{player.name}: {player.chips} chips")
 
     def _show_human_cards(self) -> None:
         for player in self.players:
             if player.is_human:
                 self.ui.show_player(player)
-                print()
 
     def _deal_community(self, deck: Deck, count: int, street: str) -> None:
         if self._only_one_player_left():
@@ -124,12 +186,12 @@ class TexasHoldemGame:
 
         self.history.log_community_cards(street, new_cards)
 
-        print()
-        print(f"-- {street} --")
+        self.ui.show_message(f"-- {street} --")
         self.ui.show_table(self.table.community_cards, self.table.pot)
-        print()
 
-    def _betting_round(self, street: str) -> None:
+    def _betting_round(
+        self, street: str
+    ) -> Generator[DecisionRequest | Tick, ActionResponse | None, None]:
         if self._only_one_player_left():
             return
 
@@ -184,36 +246,47 @@ class TexasHoldemGame:
                 # re-raise.
                 allow_raise = not already_acted
 
+                # Largest/smallest legal raise on top of the call this turn.
+                max_increment = player.chips - call_amount
+                min_increment = last_raise_size
+
                 if player.is_human:
                     self.ui.show_table(self.table.community_cards, self.table.pot)
                     self.ui.show_player(player)
-                    action = self.ui.ask_action(player, call_amount, allow_raise)
+                    response = yield DecisionRequest(
+                        seat=self.players.index(player),
+                        name=player.name,
+                        call_amount=call_amount,
+                        can_check=call_amount == 0,
+                        can_raise=allow_raise and max_increment > 0,
+                        min_raise_increment=min_increment,
+                        max_raise_increment=max_increment,
+                        can_all_in=player.chips > 0,
+                    )
+                    # A driver always sends an ActionResponse for a
+                    # DecisionRequest; guard against a stray None defensively.
+                    if response is None:
+                        action, requested_increment = "fold", None
+                    else:
+                        action = self._normalize_action(response.action)
+                        requested_increment = response.amount
                 else:
                     action = self._bot_action(player, call_amount)
                     if action == "raise" and not allow_raise:
                         action = "call"
+                    requested_increment = None
 
                 acted.add(player.name)
 
+                # Apply the action. Branches use if/elif (no `continue`) so the
+                # Tick at the end of the turn is always reached — that Tick lets
+                # the driver reveal one action at a time (with bot "thinking").
                 if action == "fold":
                     player.folded = True
                     self.history.log_action(player.name, "fold", 0, street)
                     self.ui.show_message(f"{player.name} folds.")
-                    continue
 
-                if action == "call":
-                    wager = player.bet(call_amount)
-                    self._commit(player, wager)
-                    if call_amount == 0:
-                        self.history.log_action(player.name, "check", 0, street)
-                        self.ui.show_message(f"{player.name} checks.")
-                    else:
-                        self.history.log_action(player.name, "call", wager, street)
-                        suffix = " (all in)" if player.chips == 0 else ""
-                        self.ui.show_message(f"{player.name} calls {wager}{suffix}.")
-                    continue
-
-                if action == "all in":
+                elif action == "all in":
                     wager = player.all_in()
                     self._commit(player, wager)
                     increment = player.current_bet - highest_bet
@@ -225,47 +298,66 @@ class TexasHoldemGame:
                         highest_bet = player.current_bet
                     self.history.log_action(player.name, "all_in", wager, street)
                     self.ui.show_message(f"{player.name} goes all in for {wager}!")
-                    continue
 
-                # action == "raise"
-                max_increment = player.chips - call_amount
-                if max_increment <= 0:
-                    # Can't afford a full call plus any raise on top — this is at
-                    # best an all-in short call. Put in whatever is left.
+                elif action == "raise" and max_increment > 0:
+                    if player.is_human:
+                        increment = self._clamp_raise(
+                            requested_increment, min_increment, max_increment
+                        )
+                    else:
+                        increment = self._bot_raise_increment(min_increment, max_increment)
+                    wager = player.bet(call_amount + increment)
+                    self._commit(player, wager)
+                    actual_increment = player.current_bet - highest_bet
+                    if actual_increment >= last_raise_size:
+                        last_raise_size = actual_increment
+                        acted = {player.name}
+                    if player.current_bet > highest_bet:
+                        highest_bet = player.current_bet
+                    self.history.log_action(player.name, "raise", wager, street)
+                    suffix = " (all in)" if player.chips == 0 else ""
+                    self.ui.show_message(
+                        f"{player.name} raises by {actual_increment}{suffix}."
+                    )
+
+                else:
+                    # A call/check, or a "raise" the stack can't fund (an all-in
+                    # short call): put in whatever the call takes, capped by bet().
                     wager = player.bet(call_amount)
                     self._commit(player, wager)
-                    self.history.log_action(player.name, "call", wager, street)
-                    suffix = " (all in)" if player.chips == 0 else ""
-                    self.ui.show_message(f"{player.name} calls {wager}{suffix}.")
-                    continue
-
-                min_increment = last_raise_size
-                if player.is_human:
-                    if min_increment > max_increment:
-                        # Not enough for a full legal raise; the only raise
-                        # available is an all-in for less.
-                        increment = max_increment
+                    if call_amount == 0:
+                        self.history.log_action(player.name, "check", 0, street)
+                        self.ui.show_message(f"{player.name} checks.")
                     else:
-                        increment = self.ui.ask_raise_amount(min_increment, max_increment)
-                else:
-                    increment = self._bot_raise_increment(min_increment, max_increment)
+                        self.history.log_action(player.name, "call", wager, street)
+                        suffix = " (all in)" if player.chips == 0 else ""
+                        self.ui.show_message(f"{player.name} calls {wager}{suffix}.")
 
-                wager = player.bet(call_amount + increment)
-                self._commit(player, wager)
-                actual_increment = player.current_bet - highest_bet
-                if actual_increment >= last_raise_size:
-                    last_raise_size = actual_increment
-                    acted = {player.name}
-                if player.current_bet > highest_bet:
-                    highest_bet = player.current_bet
-                self.history.log_action(player.name, "raise", wager, street)
-                suffix = " (all in)" if player.chips == 0 else ""
-                self.ui.show_message(
-                    f"{player.name} raises by {actual_increment}{suffix}."
-                )
+                # Reveal this action on its own; bots get a "thinking" pause.
+                yield Tick(pause=not player.is_human, actor=player.name)
 
         for player in self.players:
             player.current_bet = 0
+
+    @staticmethod
+    def _normalize_action(action: str) -> str:
+        # Accept web aliases; the engine works in "call"/"all in" terms.
+        action = action.strip().lower()
+        if action == "check":
+            return "call"
+        if action in ("all_in", "allin"):
+            return "all in"
+        return action
+
+    @staticmethod
+    def _clamp_raise(requested: int | None, minimum: int, maximum: int) -> int:
+        # Never trust the requested increment (web clients especially). If the
+        # stack can't cover a full minimum raise, the only legal raise is a shove.
+        if minimum > maximum:
+            return maximum
+        if requested is None:
+            return minimum
+        return max(minimum, min(requested, maximum))
 
     def _bot_action(self, player: Player, call_amount: int) -> str:
         active_players = [p for p in self.players if not p.folded]

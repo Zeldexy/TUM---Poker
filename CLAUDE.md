@@ -7,39 +7,48 @@ Do NOT scan the entire project on every task. Use the Module Map to navigate dir
 ---
 
 ## Project Status
-ALL FILES ARE FULLY IMPLEMENTED AND WORKING.
-The game runs end-to-end in the terminal via a console UI.
-No file is a stub or placeholder. Do not rewrite, restructure, or second-guess existing implementations unless explicitly asked.
+The terminal game is fully implemented and runs end-to-end via a console UI (`python main.py`).
+A FastAPI web backend (lobby + realtime multi-human play over WebSocket) is implemented on top of the
+SAME game engine; console mode is preserved. The frontend is a SEPARATE microservice (not in this repo)
+and integrates via the contract in `backend/API.md`. See "Web / GUI Architecture" below.
+Do not rewrite working implementations unless explicitly asked.
 
 ---
 
 ## Project Overview
 
-A terminal-based Texas Hold'em poker game written in pure Python (standard library only).
-Single package. No third-party dependencies. No GUI. No networking. No async.
+A terminal-based Texas Hold'em poker game written in pure Python (standard library only) for the game core.
+The game core has no third-party dependencies. The optional web backend adds FastAPI/uvicorn but the core
+modules (cards, player, table, evaluator, bot, game) stay stdlib-only.
 
-- Entry point: game.py -> TexasHoldemGame
+- Console entry point: main.py -> TexasHoldemGame (game.py)
 - Python version: 3.10+ (int | None union syntax)
-- All internal imports: relative (from .cards import Card, etc.)
-- UI: console only via ConsoleUI in ui.py using input() and print()
+- All internal imports are absolute (from cards import Card, etc.) — the project runs as flat scripts
+  (python main.py), not as a package. Do NOT switch to relative imports; it breaks `import bot` in tests.
+- Console UI: ConsoleUI in ui.py using input() and print()
 
 ---
 
 ## Module Map
 
-| File         | Single Responsibility                        | Imports From                   |
-|--------------|----------------------------------------------|-------------------------------|
-| cards.py     | Card primitives: Suit, Rank, Card, Deck      | nothing (stdlib only)         |
-| player.py    | Player state, chip management, betting       | cards.py                      |
-| table.py     | Community cards, pot tracking                | cards.py                      |
-| evaluator.py | Hand ranking engine, 5-card evaluation       | cards.py                      |
-| ui.py        | Console I/O, display, input validation       | cards.py, player.py           |
-| game.py      | Game loop, hand orchestration, all game rules| all of the above              |
+| File             | Single Responsibility                              | Imports From                |
+|------------------|----------------------------------------------------|-----------------------------|
+| cards.py         | Card primitives: Suit, Rank, Card, Deck            | nothing (stdlib only)       |
+| player.py        | Player state, chip management, betting, all-in     | cards.py                    |
+| table.py         | Community cards, pot tracking                      | cards.py                    |
+| evaluator.py     | Hand ranking engine, 5-card evaluation             | cards.py                    |
+| bot.py           | BotBrain: Monte-Carlo decision engine for bots     | cards.py, evaluator.py      |
+| hand_history.py  | HandHistoryLogger: append hands to JSONL           | stdlib (json, datetime)     |
+| stats.py         | StatsDashboard: aggregate stats from JSONL         | stdlib (json, collections)  |
+| ui.py            | Console I/O, display, input validation             | cards.py, player.py         |
+| game.py          | Game loop, hand orchestration, all betting rules   | all of the above            |
+| main.py          | CLI menu / session loop                            | game.py, player.py, stats.py|
+| test_bot.py      | Standalone assertions for BotBrain (no framework)  | cards, evaluator, bot       |
 
 Ripple risk: cards.py is the root dependency. Any change there can affect all other files.
 evaluator.py and table.py are the most isolated.
-ui.py never makes game decisions.
-game.py never formats strings directly.
+ui.py never makes game decisions. game.py owns all rules and orchestration.
+hand_history.py / stats.py are decoupled via the JSONL file (`hand_history.jsonl`, gitignored).
 
 ---
 
@@ -47,233 +56,181 @@ game.py never formats strings directly.
 
 ### cards.py
 
-Suit(IntEnum)
-Represents the four suits as integers for comparison and iteration.
-  CLUBS=0, DIAMONDS=1, HEARTS=2, SPADES=3
-  .symbol -> str    returns 'C', 'D', 'H', 'S'
-
-Rank(IntEnum)
-Represents card values 2-14 where 14 is Ace high. Integer value is used directly in hand evaluation.
-  TWO=2, THREE=3, ..., TEN=10, JACK=11, QUEEN=12, KING=13, ACE=14
-  .label -> str     returns '2'..'9', 'T', 'J', 'Q', 'K', 'A'
-  Ten is labelled 'T' so every card has a clean 2-character string (e.g. TH, AH).
-
-Card  @dataclass(frozen=True)
-Immutable value object. Hashable. Can be used in sets and as dict keys.
-  rank: Rank
-  suit: Suit
-  __str__() -> str    rank.label + suit.symbol, e.g. 'AH', '7C'
-
-Deck
-Creates all 52 cards via nested loop over Suit x Rank and shuffles immediately on __init__.
-  _cards: list[Card]               internal, shuffled, 52 cards on init
-  draw(count: int = 1) -> list[Card]
-    Pops count cards from _cards and returns them as a list.
-    Raises ValueError if count < 1 or count > remaining cards.
-    Uses .pop() so the same card can never be drawn twice.
-
----
+Suit(IntEnum): CLUBS=0, DIAMONDS=1, HEARTS=2, SPADES=3. `.symbol -> 'C'|'D'|'H'|'S'`.
+Rank(IntEnum): TWO=2 .. ACE=14. `.label -> '2'..'9','T','J','Q','K','A'` (Ten is 'T' for 2-char cards).
+Card @dataclass(frozen=True): rank, suit. `__str__()` -> e.g. 'AH', '7C', 'TS'. Hashable/immutable.
+Deck: builds 52 cards (Rank x Suit) and shuffles on __init__.
+  draw(count=1) -> list[Card]; pops from the end; ValueError if count<1 or count>remaining.
 
 ### player.py
 
-Player  @dataclass
-Central state object for one player. Passed by reference throughout the game.
-  name: str
-  chips: int
-  is_human: bool = False
-  hole_cards: list[Card] = field(default_factory=list)
-  current_bet: int = 0
-  folded: bool = False
-
-  reset_for_hand() -> None
-    Clears hole_cards with .clear(), resets current_bet=0, folded=False.
-    Chips are NOT reset — they persist across hands.
-
-  receive(cards: list[Card]) -> None
-    Extends hole_cards with the given list. Uses .extend(), not .append().
-
-  bet(amount: int) -> int
-    Raises ValueError if amount < 0.
-    Actual wager = min(amount, self.chips)  — enforces all-in, never negative chips.
-    Deducts wager from chips. Adds wager to current_bet.
-    Returns the actual wager. Caller is responsible for adding it to the pot.
-
-  active -> bool  @property
-    True if not folded AND chips > 0.
-
----
+Player @dataclass: name, chips, is_human=False, hole_cards=[], current_bet=0, folded=False.
+  reset_for_hand(): clears hole_cards, current_bet=0, folded=False. Chips persist.
+  receive(cards): hole_cards.extend(cards).
+  bet(amount) -> int: ValueError if amount<0. Wager = min(amount, chips); deducts chips; adds to
+    current_bet; returns the ACTUAL wager (may be capped = all-in). Caller adds it to the pot.
+  all_in() -> int: returns self.bet(self.chips).
+  active -> bool (property): not folded AND chips > 0.
 
 ### table.py
 
-Table  @dataclass
-Stores shared state visible to all players during a hand.
-  community_cards: list[Card] = field(default_factory=list)
-  pot: int = 0
-
-  reset() -> None
-    community_cards.clear() — uses .clear(), does NOT reassign to a new list.
-    pot = 0
-
-  add_to_pot(amount: int) -> None
-    Raises ValueError if amount < 0.
-    pot += amount
-
----
+Table @dataclass: pot=0, community_cards=[] (field(default_factory=list)).
+  reset(): community_cards.clear() (in place, no reassign); pot=0.
+  add_to_pot(amount): ValueError if amount<0; pot += amount.
 
 ### evaluator.py
 
-HandCategory(IntEnum)
-Nine hand ranks as comparable integers. Higher integer = stronger hand.
-  HIGH_CARD=0, ONE_PAIR=1, TWO_PAIR=2, THREE_OF_A_KIND=3,
-  STRAIGHT=4, FLUSH=5, FULL_HOUSE=6, FOUR_OF_A_KIND=7, STRAIGHT_FLUSH=8
+HandCategory(IntEnum): HIGH_CARD=0 .. STRAIGHT_FLUSH=8 (higher int = stronger).
+HandRank @dataclass(frozen=True, order=True): category, tiebreakers: tuple[int, ...].
+  `__str__()` -> category.name.replace("_"," ").title() (e.g. "Two Pair"). Comparable via order=True.
+  Tiebreaker tuples AS CURRENTLY IMPLEMENTED (note: kickers are NOT stored for quads/trips/pairs/two-pair):
+    STRAIGHT_FLUSH / STRAIGHT : (high_card,)
+    FLUSH / HIGH_CARD         : full ranks sorted descending
+    FOUR_OF_A_KIND            : (quad_rank,)
+    FULL_HOUSE                : (trips_rank, pair_rank)
+    THREE_OF_A_KIND           : (trips_rank,)
+    TWO_PAIR                  : (high_pair, low_pair)
+    ONE_PAIR                  : (pair_rank,)
+HandEvaluator: stateless service (no __init__, no state).
+  best_rank(cards) -> HandRank: ValueError if <5 cards; max over all C(n,5) combos.
+  _rank_five(cards) -> HandRank (private): Counter on ranks, groups sorted by count, flush check,
+    _straight_high; classifies SF > 4K > FH > F > S > 3K > 2P > 1P > HC.
+  _straight_high(ranks) -> int | None (private): sorts; consecutive run of 5 -> top; wheel {2,3,4,5,14} -> 5.
 
-HandRank  @dataclass(frozen=True, order=True)
-Comparable value object. order=True means Python auto-generates lt, gt, eq from field order.
-  category: HandCategory       compared first
-  tiebreakers: tuple[int, ...] compared second, element by element
-  label -> str  @property      category.name.replace("_", " ").title()
+### bot.py
 
-Tiebreaker tuple ordering — strongest deciding value must always come first:
-  STRAIGHT_FLUSH / STRAIGHT  : (high_card,)
-  FOUR_OF_A_KIND             : (quad_rank, kicker)
-  FULL_HOUSE                 : (trips_rank, pair_rank)
-  FLUSH / HIGH_CARD          : (rank1, rank2, rank3, rank4, rank5) descending
-  THREE_OF_A_KIND            : (trips_rank, kicker1, kicker2)
-  TWO_PAIR                   : (high_pair, low_pair, kicker)
-  ONE_PAIR                   : (pair_rank, kicker1, kicker2, kicker3)
+BotBrain: pure decision logic — never prints, reads input, or mutates shared state.
+  __init__(simulations=1000): stores simulations; creates one shared stateless HandEvaluator (never reassign).
+  decide(hole_cards, community_cards, pot, call_amount, player_chips, position_index,
+         total_active_players) -> 'fold' | 'call' | 'raise'.
+    Layer 1: win probability via Monte-Carlo (_estimate_win_probability).
+    Layer 2: pot_odds = call_amount/(pot+call_amount); position loosens the threshold slightly.
+    Layer 3: free action -> raise if win>0.65 else call; otherwise raise if win>=0.65,
+             call if win>=adjusted_threshold, else fold.
+  _estimate_win_probability(hole, community, num_opponents) -> float: runs `simulations` random
+    rollouts; counts STRICT wins (ties don't count); returns 0.5 if no valid iterations.
+  Note: decide() never returns "all in" — only humans choose all-in via the UI/web action.
 
-HandEvaluator
-Stateless service. No __init__. No stored state. Never add instance variables.
+### hand_history.py
 
-  best_rank(cards: list[Card]) -> HandRank
-    Raises ValueError if len(cards) < 5.
-    Generates all C(n,5) 5-card combos via combinations(cards, 5).
-    Returns max(HandRank) across all combos.
-    In Texas Hold'em called with 7 cards (2 hole + 5 community).
+HandHistoryLogger(filename="hand_history.jsonl"): appends one JSON object per hand to a JSONL file.
+  start_hand(hand_number, players): begins an in-memory record (players' names + starting chips).
+  log_action(player_name, action, amount=0, street="preflop"): appends an action; no-op if no hand started.
+  log_community_cards(street, cards): records dealt board cards as strings.
+  finish_hand(winners: list[str], pot): records winners+pot, writes the JSON line, resets.
+  Action strings logged by game.py: "small_blind", "big_blind", "fold", "check", "call", "raise", "all_in".
 
-  _rank_five(cards: list[Card]) -> HandRank   (private)
-    Evaluates exactly 5 cards.
-    Pipeline:
-      1. Extract ranks sorted descending
-      2. Counter(ranks) to count duplicates
-      3. Sort groups as (count, rank) descending
-      4. is_flush = all suits equal
-      5. straight_high = _straight_high(ranks) or None
-      6. Return HandRank by priority: SF > 4K > FH > F > S > 3K > 2P > 1P > HC
+### stats.py
 
-  _straight_high(ranks: list[int]) -> int | None   (private)
-    Deduplicates ranks first — a paired board cannot form a straight.
-    Special case: {14,2,3,4,5} is a wheel straight, returns 5 not 14.
-    Checks all windows of 5 consecutive descending values.
-    Returns highest card of the straight, or None if no straight exists.
-
----
+StatsDashboard(filename="hand_history.jsonl"): reads the JSONL and aggregates per player.
+  load_hands() -> list[dict]; calculate_stats() -> dict[name -> counters]
+    (hands_played, hands_won, total_winnings, folds, calls, raises, checks, bets,
+     small_blinds, big_blinds). Note: action_map has no "all_in" key, so all-ins are not yet counted.
+  print_dashboard() -> None: prints a per-player table. (A JSON-returning method is added for the web API.)
 
 ### ui.py
 
-ConsoleUI
-Pure I/O layer. No game logic. No state.
-All methods either print to console or return a validated value from the user.
-Never import from game.py, table.py, or evaluator.py — only knows Card and Player.
-
-  show_table(community_cards: list[Card], pot: int) -> None
-    Prints "Board: AH KD 7S" or "Board: (empty)" when no cards are present.
-    Prints "Pot: 120"
-
-  show_player(player: Player) -> None
-    Prints player name, hole cards, and remaining chips.
-
-  ask_action(player: Player, call_amount: int) -> str
-    Loops with while True until valid input is received.
-    Normalises input with .strip().lower() before comparing.
-    'c', 'call', 'check'  ->  returns 'call'
-    'r', 'raise'          ->  returns 'raise'
-    'f', 'fold'           ->  returns 'fold'
-    Any other input repeats the prompt.
-
-  ask_raise_amount(minimum: int, maximum: int) -> int
-    Loops until valid input received.
-    Handles non-numeric input with try/except ValueError and continues the loop.
-    Validates minimum <= amount <= maximum before returning.
-
-  show_message(message: str) -> None
-    Plain print().
-
-  format_cards(cards: list[Card]) -> str
-    Returns all cards as a space-joined string: "AH KD 7S"
-    Uses str(card) which calls Card.__str__()
-
----
+ConsoleUI: pure console I/O. Imports only Card/Deck and Player. Never imports game/table/evaluator.
+  format_cards(cards) -> str: space-joined str(card), e.g. "AH KD 7C".
+  show_table(community_cards, pot): prints "Community Cards: ..." (or "empty") and "Pot: ...".
+  show_player(player): prints name, hole cards (or "None"), chips.
+  ask_action(player, call_amount, allow_raise=True) -> str: blocks on input(); recurses on bad input.
+    Returns 'call' (also for check), 'raise' (only if allow_raise), 'all in', or 'fold'.
+    allow_raise=False hides the raise option — used when a player is only owed a call on a
+    sub-minimum all-in (poker re-opening rule: they may call/fold/all-in but not raise).
+  ask_raise_amount(minimum, maximum) -> int: blocks; loops until an int within [minimum, maximum].
+  show_message(message): print(message) then a blank line.
 
 ### game.py
 
-TexasHoldemGame
-Top-level orchestrator. Owns the game loop. Delegates everything to the other modules.
+TexasHoldemGame: top-level orchestrator. Owns the game loop and ALL betting/pot rules.
 
-  __init__(players: list[Player], small_blind: int = 5, big_blind: int = 10)
-    Raises ValueError if len(players) < 2.
-    Creates: self.table (Table), self.evaluator (HandEvaluator), self.ui (ConsoleUI)
-    Stores: self.players, self.small_blind, self.big_blind
+  __init__(players, small_blind=5, big_blind=10): ValueError if <2 players.
+    Creates table, evaluator, ui (ConsoleUI), history (HandHistoryLogger), bot_brain (BotBrain(1000)).
+    hand_number=0. button = len(players)-1 so hand 1 has SB=players[0], BB=players[1].
 
-  play_hand() -> None
-    Orchestrates one full hand. See Game Flow section below.
+  play_hand() -> None: orchestrates one full hand. See Game Flow.
 
-  _post_blinds() -> None
-    players[0].bet(small_blind) — amount added to pot.
-    players[1].bet(big_blind)   — amount added to pot.
-    Prints "[name] posts [amount]; [name] posts [amount]".
+  _commit(player, wager): table.add_to_pot(wager) AND contributions[name] += wager.
+    Single choke point so the per-player contribution map stays in sync with the pot (drives side pots).
 
-  _show_human_cards() -> None
-    Iterates all players. Calls ui.show_player() only if player.is_human is True.
+  _post_blinds(): SB at _sb_index posts small_blind, BB at _bb_index posts big_blind (capped/all-in safe
+    via bet()), each via _commit. Logs blinds; prints the posting line.
 
-  _deal_community(deck: Deck, count: int, street: str) -> None
-    Returns immediately if _only_one_player_left() is True.
-    Extends table.community_cards with deck.draw(count).
-    Calls ui.show_message() with the street name.
+  _show_players_chips() / _show_human_cards(): console display (chip stacks; human hole cards only).
 
-  _betting_round(street: str) -> None
-    For each player — skips folded players:
-      call_amount = max current_bet across all players - this player's current_bet
-      if player.is_human -> ui.ask_action()
-      else               -> _bot_action()
-      'fold'  -> player.folded = True
-      'call'  -> player.bet(call_amount); table.add_to_pot(wager returned)
-      'raise' -> ui.ask_raise_amount(); player.bet(amount); table.add_to_pot(wager returned)
-      Breaks early if _only_one_player_left()
-    Resets current_bet = 0 for ALL players at end of round.
+  _deal_community(deck, count, street): returns early if only one player left; draws+extends the board;
+    logs community cards; prints the street header and board.
 
-  _bot_action(player: Player, call_amount: int) -> str
-    if call_amount > player.chips // 2  ->  returns 'fold'
-    else                                ->  returns 'call'
+  _betting_round(street): the core betting loop. Returns immediately if only one player left, or if
+    fewer than 2 players can still wager (rest folded/all-in). Tracks highest_bet, last_raise_size
+    (min legal raise; starts at big_blind), and `acted` (players who acted since the last full raise).
+    Iterates players in `_action_order(preflop)`. Per turn:
+      - skip folded / all-in; skip if already acted and nothing to call.
+      - allow_raise = not already-acted (sub-minimum all-in does NOT reopen action to prior actors).
+      - human -> ui.ask_action()/ui.ask_raise_amount(); bot -> _bot_action() (a bot 'raise' it isn't
+        allowed becomes 'call').
+      - fold / check / call (with " (all in)" suffix when capped) / all in / raise.
+      - a full raise (increment >= last_raise_size) updates last_raise_size and resets `acted`.
+      - highest_bet only ever rises (monotonic) so call_amount can never go negative.
+    Resets every player's current_bet=0 at the end of the round.
 
-  _showdown() -> None
-    Evaluates only players where not player.folded.
-    For each: evaluator.best_rank(player.hole_cards + table.community_cards)
-    Finds winner(s) by max HandRank.
-    Splits pot evenly on tie using integer division.
-    Displays winner name, hand label, and cards via ui.show_message().
+  _bot_action(player, call_amount) -> str: builds position_index/total_active from non-folded players
+    and delegates to bot_brain.decide().
+  _bot_raise_increment(minimum, maximum) -> int: bots raise the minimum legal size, or shove if they
+    cannot afford it.
 
-  _only_one_player_left() -> bool
-    Returns True if the count of non-folded players is <= 1.
+  _showdown(): _refund_uncalled_bet() first; if only one player left they take the whole pot; otherwise
+    rank all non-folded hands and award side pots.
+
+  _refund_uncalled_bet(): if exactly one player contributed strictly more than everyone else, the
+    surplus above the next-highest contribution was never called and is returned to them.
+
+  _build_side_pots() -> list[(amount, eligible_players)]: peels the pot into layers smallest-contribution
+    first; each layer = floor * participants; folded contributors are included as eligible (their chips
+    stay in the pot) but cannot win.
+
+  _merge_contested_pots(pots): collapses adjacent layers contested by the SAME set of non-folded players
+    so dead money (e.g. a surrendered blind) does not show up as a bogus "side pot".
+
+  _award_pot(amount, winners, best_rank, label): splits with integer division; the odd chip goes to the
+    first winner clockwise from the button (small-blind seat first); prints the result.
+
+  _player_by_name(name) -> Player; _only_one_player_left() -> bool (count of non-folded == 1).
+  _action_order(preflop) -> list[Player]: clockwise from UTG (button+3) preflop, else from SB (button+1).
+    Puts the big blind last preflop (the BB option).
+
+  Button / blind rotation: button starts at len(players)-1. Each hand: button %= len(players);
+    _sb_index=(button+1)%n; _bb_index=(button+2)%n. After the hand: button=(button+1)%n. Busted
+    (0-chip) players are removed at the start of play_hand (slice assignment, keeps caller's list in sync).
+
+### main.py
+
+Menu-driven session loop, shown at start-up AND after every game ends:
+  "=== Texas Hold'em ===" / 1. Play hand / 2. Show stats / 3. Quit.
+  Option 1 plays hands until only one player has chips (then prints the winner). Option 2 prints the
+  StatsDashboard. Option 3 quits. Players: "You" (human) + two bots, 100 chips each.
 
 ---
 
 ## Game Flow — One Complete Hand
 
 play_hand()
-  Deck()                               new shuffled deck
-  table.reset()                        clear board and pot
-  player.reset_for_hand() for all      clear cards, bets, folded state — chips persist
-  deck.draw(2) for each player         deal hole cards via player.receive()
-  _post_blinds()                       players[0]=SB, players[1]=BB
-  _show_human_cards()                  reveal hole cards to human players only
+  drop busted (0-chip) players; bail if <2 remain
+  hand_number += 1; history.start_hand(...)
+  rotate/derive button, _sb_index, _bb_index
+  Deck(); table.reset(); contributions = {name: 0}
+  reset_for_hand() for all; deal 2 hole cards each
+  _post_blinds(); _show_players_chips(); _show_human_cards()
   _betting_round('Pre-Flop')
-  _deal_community(deck, 3, 'Flop')     then _betting_round('Flop')
-  _deal_community(deck, 1, 'Turn')     then _betting_round('Turn')
-  _deal_community(deck, 1, 'River')    then _betting_round('River')
+  _deal_community(3,'Flop')  then _betting_round('Flop')
+  _deal_community(1,'Turn')  then _betting_round('Turn')
+  _deal_community(1,'River') then _betting_round('River')
   _showdown()
+  button advances one seat; print a separator (2 blank lines, 40 dashes, 2 blank lines)
 
-Both _deal_community and _betting_round short-circuit if _only_one_player_left() is True.
+_deal_community and _betting_round short-circuit when _only_one_player_left().
+_betting_round also short-circuits when fewer than 2 players can still wager (all-in/folded).
 
 ---
 
@@ -290,7 +247,8 @@ POSITIONS AND BLINDS
   Small blind (SB): player immediately left of the dealer posts half the big blind.
     Round up if the result is not a whole number of chips.
   Big blind (BB): player two seats left of the dealer posts the full big blind.
-  In the code players[0] = SB, players[1] = BB. Button rotation must shift these each hand.
+  In the code players[0] = SB, players[1] = BB on the first hand (button starts at the last seat);
+    the button shifts these each hand.
 
 PLAYER ACTIONS — available each turn
   Fold    — always available; player surrenders their hand and all chips bet this hand
@@ -302,125 +260,137 @@ PLAYER ACTIONS — available each turn
 
 MINIMUM BET
   The first bet of any round must be at least equal to the big blind.
-  Enforce: if bet_amount < big_blind, reject and re-prompt.
 
 MINIMUM RAISE
   A raise must be at least equal to the size of the previous bet or raise in the same round.
   Track last_raise_size per betting round. Reset to big_blind at the start of each round.
-  Example: BB=10. Player A bets 40 (raise size = 40). Player B minimum raise = 40 more,
-  meaning Player B's total bet must be at least 80.
-  Enforce: if raise_amount < last_raise_size, reject and re-prompt.
 
 ALL-IN AND INCOMPLETE RAISE RULE — critical edge case
   A player may go all-in for any amount, even less than the minimum raise.
-  If the all-in amount is LESS than a full legal raise:
-    It does NOT reopen action to players who have already called or bet this round.
-    Only players who have not yet acted may still act.
-  If the all-in amount IS a full legal raise or more:
-    Action is reopened to all remaining active players including those who already called.
-  Track whether each player's action is reopened using a flag per betting round.
+  If the all-in amount is LESS than a full legal raise it does NOT reopen action to players who have
+    already called/bet this round; only players who have not yet acted may still act.
+  If the all-in amount IS a full legal raise or more, action is reopened to all remaining active players.
+  In game.py this is enforced by `allow_raise` and by only resetting `acted` on a full raise.
 
 RE-OPENING THE BET
-  A prior bettor or raiser may only act again if a subsequent raise constitutes a full legal raise.
-  Partial all-ins (less than minimum raise) do not give prior actors another turn.
+  A prior bettor/raiser may only act again if a subsequent raise constitutes a full legal raise.
 
 NUMBER OF RAISES
-  No-limit means no cap on the number of raises in a single round.
-  Do not enforce any raise cap in game.py.
+  No-limit: no cap on the number of raises in a single round.
 
 SIDE POTS — required when a player is all-in
-  Created when a player goes all-in for less than the full call amount.
-  Main pot: all active players are eligible.
-  Side pot: only players who contributed chips beyond the all-in level are eligible.
-  At showdown, evaluate side pots separately from the main pot.
-  Each side pot is won independently by the best hand among eligible players.
-  Implementation note: track pot contributions per player per round to calculate side pots correctly.
+  Created when a player is all-in for less than the full call amount.
+  Main pot: all contributing players eligible. Side pots: only players who contributed beyond the
+    all-in level. Evaluate side pots separately; each won by the best hand among eligible players.
+  Implemented via per-player `contributions` + _build_side_pots / _merge_contested_pots / _refund_uncalled_bet.
 
 TIES AND SPLIT POTS
-  If two or more hands are equal in rank, the pot is split equally between them.
-  Odd chip (indivisible remainder after split): awarded to the first active player
-  left of the dealer button. Do not round down silently — track and assign the odd chip explicitly.
+  Equal hands split the pot equally. The odd (indivisible) chip goes to the first eligible player left
+  of the dealer button (small-blind seat first). Tracked explicitly in _award_pot.
+
+---
+
+## Web / GUI Architecture (IMPLEMENTED backend; frontend is a separate microservice)
+One shared engine drives both the terminal and a JSON/WebSocket API. The frontend is a SEPARATE
+microservice (not in this repo); the integration contract lives in `backend/API.md`. The decoupling
+principle: the engine never owns I/O.
+
+- Input: human decision points SUSPEND the betting loop. `TexasHoldemGame._run_hand()` is a generator
+  that yields an `engine_events.DecisionRequest` when a human must act and is resumed with an
+  `ActionResponse` via `.send()`. It also yields `engine_events.Tick` after the deal, after each
+  community street, and after EACH player's action (resume with `.send(None)`); a Tick after a bot
+  carries `pause=True`. `play_hand()` is the CONSOLE driver (ignores Ticks, no delay); the backend
+  driver broadcasts on every Tick and sleeps `bot_think_seconds` on a bot Tick so the frontend sees
+  bots act one at a time. Bots resolve synchronously inside the engine and never produce a DecisionRequest.
+  Thinking time is tunable via `POKER_BOT_THINK_SECONDS` (default 1.0).
+- Output: pluggable UI — `ConsoleUI` prints (terminal); `ui.HeadlessUI` buffers log lines for the web.
+  Clients render from `state.py` serializers (per-recipient redacted: you see only your own hole cards
+  until showdown). Card strings are 2 chars (`"AH"`); hand ranks appear in log text ("Two Pair").
+- Backend: FastAPI + uvicorn (`requirements.txt`). REST for lobby/setup/queries; WebSocket for realtime.
+- Threads: NOT for the game loop (turn-based). Concurrency = asyncio; a per-table `asyncio.Lock`
+  serializes start/deal/action; the CPU-bound bot Monte-Carlo is offloaded with `asyncio.to_thread`.
+- Layout: `engine_events.py` (DecisionRequest/ActionResponse/Tick), `state.py` (serializers),
+  `backend/app.py` (FastAPI routes + WS), `backend/sessions.py` (Table lobby + driver + registry),
+  `backend/schemas.py` (Pydantic), `backend/API.md` (frontend contract). Sessions are in-memory.
+
+### Lobby / table model (host-driven)
+A `Table` (backend/sessions.py) has phases `lobby` -> `running` -> `over`.
+
+- **Create table**: the host creates a lobby and gets a `game_id`, a short invite `code`, and a host
+  `token`. The host configures `starting_chips` and may add bots.
+- **Join table**: friends join with the `code` (shareable as a link) and a name; each human gets their
+  own `token`. Names must be unique per table.
+- **Host controls (lobby only)**: add bots, kick any member except the host, set starting chips, and
+  start the game. The game can start once there are >= 2 members.
+- **Host deals each hand**: after `start`, the host triggers each subsequent hand (`POST .../hands`).
+  Bots auto-play; the backend only waits on a human when it is that human's turn.
+- **Late join (while running)**: joining mid-game marks the member `pending`; they are seated with the
+  table's `starting_chips` at the start of the next hand the host deals.
+- **Kicking is lobby-only.** Once running, seats are fixed; busted (0-chip) players still auto-drop
+  between hands. When only one player has chips, the table goes `over` and a `game_over` is broadcast.
+
+### REST endpoints (see backend/API.md for full request/response shapes)
+- `POST /api/tables` (create) · `POST /api/tables/{code}/join` · `POST /api/tables/{id}/bots`
+- `POST /api/tables/{id}/kick` · `POST /api/tables/{id}/starting-chips`
+- `POST /api/tables/{id}/start` · `POST /api/tables/{id}/hands` (deal next, host)
+- `GET /api/tables/{id}` · `DELETE /api/tables/{id}` · `GET /api/stats`
+
+### WebSocket `WS /api/tables/{id}/ws?token=...`
+- Client -> server: `{type:"action", action, amount?}`, `{type:"start_game"}`, `{type:"deal_hand"}`.
+- Server -> client: `lobby` (lobby snapshot), `state` (redacted), `log` (action lines),
+  `your_turn` (to the acting seat only), `hand_result` (showdown, all live hands revealed),
+  `game_over`, `error`. Spectators connect without a token.
 
 ---
 
 ## Architecture Rules — Do Not Break These
 
-IMMUTABILITY
-Card and HandRank are frozen dataclasses. Never set attributes on them after creation.
-
-MUTABLE DEFAULTS
-hole_cards (Player) and community_cards (Table) use field(default_factory=list).
-Never change these to = [] — that causes all instances to share the same list object.
-
-LIST MUTATION
-Use .clear() to empty lists. Never reassign self.hole_cards = [] or self.community_cards = [].
-Reassignment breaks existing references held by other parts of the code.
-
-CHIP SAFETY
-Player.bet() uses min(amount, self.chips). Chips can never go negative.
-current_bet tracks chips bet in the current round only. It resets to 0 at end of every _betting_round().
-
-RETURN VALUE FROM bet()
-bet() returns the actual wager which may be less than requested due to chip limits.
-The caller (_betting_round, _post_blinds) must pass this return value to table.add_to_pot().
-Never assume wager equals the requested amount.
-
-EVALUATOR PURITY
-HandEvaluator has no state. It must remain a stateless service.
-Never add instance variables or session state to it.
-
-UI ISOLATION
-ui.py only imports Card and Player. It must never import from game.py, table.py, or evaluator.py.
-
-SHOWDOWN SCOPE
-_showdown() only evaluates players where not player.folded.
-Never pass a folded player's cards to the evaluator.
+IMMUTABILITY: Card and HandRank are frozen dataclasses. Never set attributes after creation.
+MUTABLE DEFAULTS: hole_cards (Player) and community_cards (Table) use field(default_factory=list).
+  Never change to = []; that shares one list across instances.
+LIST MUTATION: empty lists with .clear(); never reassign self.hole_cards/self.community_cards.
+  play_hand uses self.players[:] = [...] (slice assignment) on purpose to keep the caller's list in sync.
+CHIP SAFETY: Player.bet() caps at min(amount, chips); chips never go negative. current_bet resets to 0
+  at the end of every _betting_round().
+RETURN VALUE FROM bet(): the actual wager may be less than requested (all-in). Always pass the return
+  value to _commit()/add_to_pot(); never assume wager == requested amount.
+HIGHEST BET IS MONOTONIC: in _betting_round, highest_bet only ever increases (an all-in for less than the
+  call must not lower it), or call_amount goes negative.
+EVALUATOR PURITY: HandEvaluator is stateless. Never add instance/session state.
+UI ISOLATION: ui.py imports only Card/Deck and Player; never game/table/evaluator.
+SHOWDOWN SCOPE: never pass a folded player's cards to the evaluator.
+ABSOLUTE IMPORTS: keep `from cards import ...` style (flat scripts, not a package).
 
 ---
 
-## Known Edge Cases — Already Handled Correctly
+## Known Edge Cases — Already Handled
 
-Wheel straight (A-2-3-4-5)
-  Ace plays low. _straight_high returns 5, not 14.
-
-Duplicate ranks in straight check
-  _straight_high deduplicates ranks before checking consecutive windows.
-
-All-in
-  bet() automatically caps at available chips. No separate all-in state or method is needed.
-
-Tie / split pot
-  _showdown() handles multiple winners with equal HandRank. Pot is split with integer division.
-
-One player left early
-  Community cards stop being dealt. Betting stops. Remaining player takes pot uncontested.
-
-Empty board display
-  show_table() prints (empty) when community_cards list is empty.
-
-Invalid console input
-  ask_action() and ask_raise_amount() loop indefinitely until valid input is provided.
+Wheel straight (A-2-3-4-5): Ace plays low; _straight_high returns 5.
+All-in: bet() caps at available chips; explicit "all in" action also supported via the UI.
+All-in for less than the call: highest_bet stays put; uncalled surplus refunded; side pots built.
+Sub-minimum all-in raise: does not reopen action (allow_raise / acted handling).
+Tie / split pot: multiple winners; odd chip to first seat left of the button.
+Busted player: dropped before the next hand (no free rides to showdown).
+Folded-around hand: betting/dealing stop; last player takes the pot uncontested.
+One player can still wager: betting rounds skipped; remaining streets dealt out.
 
 ---
 
 ## Coding Standards — Match Existing Style
 
-- Type hints on every method signature using built-in generics: list[Card], int | None
-- Guard clauses at the top of methods — validate inputs before doing any work
-- ValueError for all invalid input: negative amounts, wrong counts, too few cards
-- Catch except ValueError specifically — no bare except:
-- Descriptive variable names: call_amount, community_cards, straight_high — no abbreviations
-- Private helpers prefixed with underscore: _rank_five, _bot_action, _only_one_player_left
-- Comments explain WHY, not WHAT — never restate what the code already says
+- Type hints on every method signature using built-in generics: list[Card], int | None.
+- Guard clauses at the top of methods; ValueError for invalid input (negatives, wrong counts, <5 cards).
+- Catch except ValueError specifically — no bare except.
+- Descriptive names: call_amount, community_cards, last_raise_size — no abbreviations.
+- Private helpers prefixed with underscore.
+- Comments explain WHY, not WHAT.
 
 ---
 
 ## Out of Scope — Do Not Add Without Explicit Discussion
 
-- No persistence or save state between sessions
-- No GUI or web interface
-- No networking or remote multiplayer
-- No async or threading
-- No third-party packages
-- No tournament bracket or multi-table logic
-- No player statistics tracking across sessions
+- No persistence/save state between sessions beyond the hand_history.jsonl log.
+- No networking beyond the planned FastAPI/WebSocket backend described above.
+- No third-party packages in the GAME CORE (cards/player/table/evaluator/bot/game stay stdlib-only).
+- No tournament bracket or multi-table logic.
+- No player statistics tracking across sessions beyond the existing JSONL + StatsDashboard.

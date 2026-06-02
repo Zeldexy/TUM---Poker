@@ -1,0 +1,224 @@
+{
+  "info": {
+    "name": "Texas Hold'em Backend",
+    "_postman_id": "a1b2c3d4-0000-4000-8000-poker0000001",
+    "description": "All REST endpoints for the poker backend. Run the server first:\n\n    uvicorn backend.app:app --reload\n\nVariables (auto-captured by the test scripts): baseUrl, game_id, code, host_token, join_token, member_id.\nTypical order: Create table -> Add bot -> Kick member -> Join table -> Start game -> Deal next hand.\n\nWebSocket (test with New > WebSocket Request, not part of this REST collection):\n    ws://localhost:8000/api/tables/{{game_id}}/ws?token={{host_token}}\nSend:    {\"type\":\"start_game\"}  |  {\"type\":\"deal_hand\"}  |  {\"type\":\"action\",\"action\":\"call\",\"amount\":0}\nReceive: lobby | state | log | your_turn | hand_result | game_over | error",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000" },
+    { "key": "game_id", "value": "" },
+    { "key": "code", "value": "" },
+    { "key": "host_token", "value": "" },
+    { "key": "join_token", "value": "" },
+    { "key": "member_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Create table (host)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "pm.collectionVariables.set('game_id', j.game_id);",
+              "pm.collectionVariables.set('code', j.code);",
+              "pm.collectionVariables.set('host_token', j.token);",
+              "console.log('game_id', j.game_id, 'code', j.code);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"host_name\": \"Anton\",\n  \"starting_chips\": 100,\n  \"small_blind\": 5,\n  \"big_blind\": 10\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/api/tables", "host": [ "{{baseUrl}}" ], "path": [ "api", "tables" ] }
+      }
+    },
+    {
+      "name": "Add bot (host, lobby only)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "const m = j.members || [];",
+              "if (m.length) pm.collectionVariables.set('member_id', m[m.length - 1].id);",
+              "console.log('members', m.map(x => x.name));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"host_token\": \"{{host_token}}\",\n  \"name\": \"Bob bot\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}/bots",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}", "bots" ]
+        }
+      }
+    },
+    {
+      "name": "Kick member (host, lobby only)",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"host_token\": \"{{host_token}}\",\n  \"member_id\": \"{{member_id}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}/kick",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}", "kick" ]
+        }
+      }
+    },
+    {
+      "name": "Set starting chips (host, lobby only)",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"host_token\": \"{{host_token}}\",\n  \"starting_chips\": 200\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}/starting-chips",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}", "starting-chips" ]
+        }
+      }
+    },
+    {
+      "name": "Join table by code",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "pm.collectionVariables.set('join_token', j.token);",
+              "console.log('joined as', j.member_id, 'pending', j.pending);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"name\": \"Daniel\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{code}}/join",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{code}}", "join" ]
+        }
+      }
+    },
+    {
+      "name": "Start game (host)",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"host_token\": \"{{host_token}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}/start",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}", "start" ]
+        }
+      }
+    },
+    {
+      "name": "Deal next hand (host)",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"host_token\": \"{{host_token}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}/hands",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}", "hands" ]
+        }
+      }
+    },
+    {
+      "name": "Leave table (friend)",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": {
+          "mode": "raw",
+          "options": { "raw": { "language": "json" } },
+          "raw": "{\n  \"token\": \"{{join_token}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}/leave",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}", "leave" ]
+        }
+      }
+    },
+    {
+      "name": "Get table snapshot",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}" ]
+        }
+      }
+    },
+    {
+      "name": "Delete table",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/tables/{{game_id}}",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "api", "tables", "{{game_id}}" ]
+        }
+      }
+    },
+    {
+      "name": "Get stats",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/api/stats", "host": [ "{{baseUrl}}" ], "path": [ "api", "stats" ] }
+      }
+    }
+  ]
+}

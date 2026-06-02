@@ -1,0 +1,4 @@
+# Game core (cards/player/table/evaluator/bot/game) is pure stdlib — no deps.
+# These are only needed for the optional web backend (backend/).
+fastapi>=0.110
+uvicorn[standard]>=0.29

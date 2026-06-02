@@ -77,3 +77,34 @@ class ConsoleUI:
     def show_message(self, message: str) -> None:
         print(message)
         print()  # Add an extra line for better readability
+
+
+class HeadlessUI:
+    """Output adapter for the web backend.
+
+    The web client renders the table itself from a serialized state snapshot,
+    so the display methods are intentional no-ops; only ``show_message`` lines
+    are buffered as the running action log. It never reads input — human turns
+    suspend the engine generator instead (see engine_events.DecisionRequest).
+    """
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def format_cards(self, cards: list[Card]) -> str:
+        return " ".join(str(card) for card in cards)
+
+    def show_table(self, community_cards: list[Card], pot: int) -> None:
+        pass
+
+    def show_player(self, player: Player) -> None:
+        pass
+
+    def show_message(self, message: str) -> None:
+        self.messages.append(message)
+
+    def drain(self) -> list[str]:
+        """Return buffered log lines and clear the buffer."""
+        drained = self.messages
+        self.messages = []
+        return drained

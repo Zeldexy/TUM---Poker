@@ -71,6 +71,17 @@ class StatsDashboard:
 
         return stats
 
+    def to_dict(self) -> dict:
+        # Plain JSON-serializable dict of per-player stats for the web API.
+        # Mirrors calculate_stats() but with win_rate added per player.
+        result = {}
+        for name, data in self.calculate_stats().items():
+            played = data["hands_played"]
+            entry = dict(data)
+            entry["win_rate"] = (data["hands_won"] / played * 100) if played else 0.0
+            result[name] = entry
+        return result
+
     def print_dashboard(self) -> None:
         stats = self.calculate_stats()
 
