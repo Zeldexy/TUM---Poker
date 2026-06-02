@@ -24,6 +24,12 @@ class TexasHoldemGame:
         self.evaluator = HandEvaluator()
         self.ui = ConsoleUI()
         self.hand_number = 0
+        # Index into self.players of the dealer button. The small blind sits one
+        # seat left of the button and the big blind two seats left, so starting
+        # the button at the last seat makes the first hand's small blind
+        # players[0] and big blind players[1]. Rotates one seat clockwise after
+        # every hand so the blinds do not always fall on the same players.
+        self.button = len(players) - 1
         self.history = HandHistoryLogger()
         self.bot_brain = BotBrain(simulations=1000)
         message = "Welcome to the Premium Poker Suite! We pride ourselves on providing a secure, professional, and exhilarating card-playing environment. We highly encourage you to play strategically, master your poker face, and execute daring bluffs! It really makes the mathematically unavoidable process of our algorithm politely absorbing your entire net worth so much more entertaining for everyone involved. Good luck, and may the odds be entirely in our favor!"
@@ -42,6 +48,12 @@ class TexasHoldemGame:
 
         self.hand_number += 1
         self.history.start_hand(self.hand_number, self.players)
+
+        # Keep the button in range after any eliminations, then derive the
+        # blind seats: small blind one seat left of the button, big blind two.
+        self.button %= len(self.players)
+        self._sb_index = (self.button + 1) % len(self.players)
+        self._bb_index = (self.button + 2) % len(self.players)
 
         deck = Deck()
         self.table.reset()
@@ -68,6 +80,9 @@ class TexasHoldemGame:
         self._betting_round("River")
         self._showdown()
 
+        # Move the button one seat clockwise for the next hand.
+        self.button = (self.button + 1) % len(self.players)
+
     def _commit(self, player: Player, wager: int) -> None:
         # Single choke point for chips entering the pot: keeps table.pot and the
         # per-player contribution map (used for side pots) perfectly in sync.
@@ -77,16 +92,18 @@ class TexasHoldemGame:
     def _post_blinds(self) -> None:
         if len(self.players) < 2:
             raise ValueError("There must be at least 2 players to post blinds.")
-        actual_small = self.players[0].bet(self.small_blind)
-        self._commit(self.players[0], actual_small)
-        actual_big = self.players[1].bet(self.big_blind)
-        self._commit(self.players[1], actual_big)
+        small_blind_player = self.players[self._sb_index]
+        big_blind_player = self.players[self._bb_index]
+        actual_small = small_blind_player.bet(self.small_blind)
+        self._commit(small_blind_player, actual_small)
+        actual_big = big_blind_player.bet(self.big_blind)
+        self._commit(big_blind_player, actual_big)
 
-        self.history.log_action(self.players[0].name, "small_blind", actual_small, "Pre-Flop")
-        self.history.log_action(self.players[1].name, "big_blind", actual_big, "Pre-Flop")
+        self.history.log_action(small_blind_player.name, "small_blind", actual_small, "Pre-Flop")
+        self.history.log_action(big_blind_player.name, "big_blind", actual_big, "Pre-Flop")
 
         print(
-            f"{self.players[0].name} posts {actual_small}; {self.players[1].name} posts {actual_big}"
+            f"{small_blind_player.name} posts {actual_small}; {big_blind_player.name} posts {actual_big}"
         )
         print()  # Add an extra line for better readability
 
@@ -132,6 +149,9 @@ class TexasHoldemGame:
         last_raise_size = self.big_blind
         # Players who have acted since the last action-reopening (full) raise.
         acted: set[str] = set()
+        # Players act in clockwise order from the correct first seat for the
+        # street (under the gun pre-flop, small blind afterwards).
+        order = self._action_order(street == "Pre-Flop")
 
         while True:
             if self._only_one_player_left():
@@ -147,7 +167,7 @@ class TexasHoldemGame:
             if all_settled:
                 break
 
-            for player in self.players:
+            for player in order:
                 if player.folded or player.chips == 0:
                     continue
                 if self._only_one_player_left():
@@ -386,9 +406,13 @@ class TexasHoldemGame:
         for winner in winners:
             winner.chips += share
         # Odd chip(s) left by an indivisible split go to the first eligible
-        # winner in seating order (left of the dealer button).
+        # winner clockwise from the dealer button (the small blind seat first).
         if remainder:
-            first = min(winners, key=lambda p: self.players.index(p))
+            count = len(self.players)
+            first = min(
+                winners,
+                key=lambda p: (self.players.index(p) - self._sb_index) % count,
+            )
             first.chips += remainder
         if len(winners) == 1:
             self.ui.show_message(
@@ -405,6 +429,18 @@ class TexasHoldemGame:
             if player.name == name:
                 return player
         raise ValueError(f"No player named {name}.")
+
+    def _action_order(self, preflop: bool) -> list[Player]:
+        # Clockwise seating starting from the player who acts first this street.
+        # Pre-flop that is under the gun (left of the big blind); on later
+        # streets it is the small blind. This also puts the big blind last
+        # pre-flop, giving them the option to raise after everyone has called.
+        count = len(self.players)
+        if preflop:
+            start = (self.button + 3) % count
+        else:
+            start = (self.button + 1) % count
+        return [self.players[(start + offset) % count] for offset in range(count)]
 
     def _only_one_player_left(self) -> bool:
         return sum(1 for p in self.players if not p.folded) == 1
