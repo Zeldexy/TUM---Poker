@@ -5,10 +5,8 @@ from __future__ import annotations
 from cards import Card, Deck
 from player import Player
 
-message = "Welcome to the Premium Poker Suite! We pride ourselves on providing a secure, professional, and exhilarating card-playing environment. We highly encourage you to play strategically, master your poker face, and execute daring bluffs! It really makes the mathematically unavoidable process of our algorithm politely absorbing your entire net worth so much more entertaining for everyone involved. Good luck, and may the odds be entirely in our favor!"
 
-
-class ConsoleUI: 
+class ConsoleUI:
 
     def format_cards(self, cards: list[Card]) -> str:
         return " ".join(str(card) for card in cards)
@@ -20,7 +18,6 @@ class ConsoleUI:
         print(f"Community Cards: {string_cards}")
         print(f"Pot: {pot}")
 
-
     def show_player(self, player: Player) -> None:
         # TODO: Task 2 - display the player's name, hole cards, and chip count in a clear format.
         print(f"Player: {player.name}")
@@ -30,32 +27,48 @@ class ConsoleUI:
             print("Hole Cards: None")
         print(f"Chips: {player.chips}")
 
-    
-    def ask_action(self, player: Player, call_amount: int) -> str:
-        action = input(f"{player.name}, you need to call {call_amount} chips. Do you want to call/check, raise, or fold? ").strip().lower()
-        if action in ["c", "call", "check"]:
-            return 'call'
-        
-        elif action in ["r", "raise"]:
-            return 'raise'
-        
-        elif action in ["f", "fold"]:
-            return 'fold'
-        
+    def ask_action(self, player: Player, call_amount: int, allow_raise: bool = True) -> str:
+        # allow_raise is False when the player is only owed a call on a
+        # sub-minimum all-in: poker rules let them call or fold but not re-raise.
+        if allow_raise:
+            options = "call/check, raise, all in, or fold"
         else:
-            print("Invalid action. Please enter 'call', 'raise', or 'fold'.")
-            return self.ask_action(player, call_amount)
-        
+            options = "call/check, all in, or fold"
+        action = (
+            input(
+                f"{player.name}, you need to call {call_amount} chips. Do you want to {options}? "
+            )
+            .strip()
+            .lower()
+        )
+        if action in ["c", "call", "check"]:
+            return "call"
 
+        elif action in ["r", "raise"] and allow_raise:
+            return "raise"
+
+        elif action in ["a", "all in", "allin"]:
+            return "all in"
+
+        elif action in ["f", "fold"]:
+            return "fold"
+
+        else:
+            print(f"Invalid action. Please enter '{options}'.")
+            return self.ask_action(player, call_amount, allow_raise)
 
     def ask_raise_amount(self, minimum: int, maximum: int) -> int:
         while True:
             try:
-                raise_amount = int(input(f"Enter raise amount (between {minimum} and {maximum}): "))
+                raise_amount = int(
+                    input(f"Enter raise amount (between {minimum} and {maximum}): ")
+                )
                 if minimum <= raise_amount <= maximum:
                     return raise_amount
                 else:
-                    print(f"Invalid amount. Please enter a number between {minimum} and {maximum}.")
+                    print(
+                        f"Invalid amount. Please enter a number between {minimum} and {maximum}."
+                    )
                     continue
             except ValueError:
                 print("Invalid input. Please enter a valid integer.")
@@ -64,4 +77,3 @@ class ConsoleUI:
     def show_message(self, message: str) -> None:
         print(message)
         print()  # Add an extra line for better readability
-    
