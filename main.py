@@ -14,14 +14,8 @@ def main() -> None:
 
     game = TexasHoldemGame(players)
 
-    # Play hands until a single player has chips remaining.
-    while sum(1 for p in players if p.chips > 0) > 1:
-        game.play_hand()
-
-    winner = [p for p in players if p.chips > 0][0]
-    print(f"{winner.name} wins!")
-
-    # Game over: offer the post-game menu.
+    # The menu drives the whole session: it is shown at start-up and again
+    # after every game ends (a game runs until only one player has chips).
     while True:
         print()
         print("=== Texas Hold'em ===")
@@ -32,7 +26,14 @@ def main() -> None:
         choice = input("Choose an option: ").strip()
 
         if choice == "1":
-            game.play_hand()
+            if sum(1 for p in players if p.chips > 0) > 1:
+                # Play hands until a single player has chips remaining.
+                while sum(1 for p in players if p.chips > 0) > 1:
+                    game.play_hand()
+                winner = [p for p in players if p.chips > 0][0]
+                print(f"{winner.name} wins!")
+            else:
+                print("The game is over — not enough players with chips to continue.")
         elif choice == "2":
             dashboard = StatsDashboard()
             dashboard.print_dashboard()

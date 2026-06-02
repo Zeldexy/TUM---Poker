@@ -32,8 +32,6 @@ class TexasHoldemGame:
         self.button = len(players) - 1
         self.history = HandHistoryLogger()
         self.bot_brain = BotBrain(simulations=1000)
-        message = "Welcome to the Premium Poker Suite! We pride ourselves on providing a secure, professional, and exhilarating card-playing environment. We highly encourage you to play strategically, master your poker face, and execute daring bluffs! It really makes the mathematically unavoidable process of our algorithm politely absorbing your entire net worth so much more entertaining for everyone involved. Good luck, and may the odds be entirely in our favor!"
-        self.ui.show_message(message)
 
     def play_hand(self) -> None:
         # Drop players who busted in a previous hand. A 0-chip player can't post
