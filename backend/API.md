@@ -107,11 +107,32 @@ Request: `{ "token": "YOUR_TOKEN" }`. Removes you (reassigns host if needed), br
 Response `200`: `{ "ok": true }`. (Usually you'll just send the `leave` WebSocket message instead.)
 
 ### `DELETE /api/tables/{game_id}` — tear down → `{ "ok": true }`
+Also deletes this table's hand-history file.
 
-### `GET /api/stats` — aggregated stats (from `hand_history.jsonl`)
+### `GET /api/tables/{game_id}/history` — this table's hand history
+Response `200`: `{ "game_id": "...", "hands": [ HandRecord, ... ] }` (oldest first; `[]` before any
+hand finishes). `404` if unknown. Each `HandRecord`:
+```json
+{ "hand_number": 1, "started_at": "2026-06-03T12:00:00",
+  "players": [ { "name": "You", "starting_chips": 100 }, ... ],
+  "actions": [ { "street": "Pre-Flop", "player": "You", "action": "call", "amount": 10,
+                 "time": "..." }, ... ],
+  "community_cards": [ { "street": "Flop", "cards": ["AH","KD","7C"] }, ... ],
+  "winners": ["You"], "pot": 40 }
+```
+Each table writes to its OWN file (`hand_histories/{game_id}.jsonl`); the file is deleted when the
+table's last WebSocket connection closes (or on `DELETE`), so query/store it before everyone leaves.
+
+### `GET /api/tables/{game_id}/stats` — per-player stats for THIS table
+Response `200`: `{ "game_id": "...", "players": { <name>: { ...stats } } }`. Same per-player shape as
+`GET /api/stats` below (`hands_played, hands_won, total_winnings, win_rate, folds, calls, raises,
+checks, bets, small_blinds, big_blinds`). `players` is `{}` before any hand finishes. `404` if unknown.
+
+### `GET /api/stats` — aggregated stats (across ALL tables, from `hand_history.jsonl`)
 Map keyed by player name; each value:
 `hands_played, hands_won, total_winnings, win_rate, folds, calls, raises, checks, bets,
-small_blinds, big_blinds`. (`{}` if no history; all-ins not yet tallied.)
+small_blinds, big_blinds`. (`{}` if no history; all-ins not yet tallied.) Note: the console game
+writes here; live web tables use the per-table endpoints above.
 
 ---
 

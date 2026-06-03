@@ -22,12 +22,20 @@ import asyncio
 import os
 import secrets
 from dataclasses import dataclass
+from pathlib import Path
 
 from engine_events import ActionResponse, DecisionRequest
 from game import TexasHoldemGame
+from hand_history import HandHistoryLogger
 from player import Player
 from state import serialize_decision, serialize_state
+from stats import StatsDashboard
 from ui import HeadlessUI
+
+# Per-table hand-history logs live here, one JSONL file per table, so each
+# table's hands/stats stay isolated. Files are deleted when the table's last
+# WebSocket connection closes (or on teardown).
+HISTORY_DIR = Path("hand_histories")
 
 
 @dataclass
@@ -56,6 +64,10 @@ class Table:
         self.small_blind = small_blind
         self.big_blind = big_blind
         self.status = "lobby"  # "lobby" | "running" | "over"
+
+        # This table's isolated hand-history file (created on the first finished
+        # hand; removed when the last connection closes via _maybe_cleanup).
+        self.history_path = HISTORY_DIR / f"{game_id}.jsonl"
 
         self.lock = asyncio.Lock()
         self.clients: dict[object, str | None] = {}  # ws -> token (None = spectator)
@@ -199,7 +211,11 @@ class Table:
             ]
             self.ui = HeadlessUI()
             self.game = TexasHoldemGame(
-                players, self.small_blind, self.big_blind, ui=self.ui
+                players,
+                self.small_blind,
+                self.big_blind,
+                ui=self.ui,
+                history=HandHistoryLogger(str(self.history_path)),
             )
             self.status = "running"
             await self._broadcast_lobby()
@@ -369,6 +385,23 @@ class Table:
 
     def disconnect(self, websocket) -> None:
         self.clients.pop(websocket, None)
+        # When the last connection for this table goes away, drop its isolated
+        # hand-history file so per-table logs don't accumulate on disk.
+        if not self.clients:
+            self.delete_history()
+
+    # ----- hand history & stats (per table) ----- #
+
+    def hand_history(self) -> list[dict]:
+        """Every finished hand for this table, oldest first."""
+        return StatsDashboard(str(self.history_path)).load_hands()
+
+    def stats(self) -> dict:
+        """Aggregated per-player stats from this table's history only."""
+        return StatsDashboard(str(self.history_path)).to_dict()
+
+    def delete_history(self) -> None:
+        self.history_path.unlink(missing_ok=True)
 
     # ----- broadcasting ----- #
 
@@ -445,6 +478,7 @@ class TableRegistry:
         table = self._by_id.pop(game_id, None)
         if table is not None:
             self._by_code.pop(table.code, None)
+            table.delete_history()
 
 
 registry = TableRegistry()

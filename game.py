@@ -30,6 +30,7 @@ class TexasHoldemGame:
         small_blind: int = 5,
         big_blind: int = 10,
         ui=None,
+        history=None,
     ) -> None:
         if len(players) < 2:
             raise ValueError("There must be at least 2 players to start the game.")
@@ -49,7 +50,9 @@ class TexasHoldemGame:
         # players[0] and big blind players[1]. Rotates one seat clockwise after
         # every hand so the blinds do not always fall on the same players.
         self.button = len(players) - 1
-        self.history = HandHistoryLogger()
+        # ConsoleUI writes to the shared default file; the web backend injects a
+        # per-table HandHistoryLogger so each table's hands stay separate.
+        self.history = history if history is not None else HandHistoryLogger()
         self.bot_brain = BotBrain(simulations=1000)
 
     # ------------------------------------------------------------------ #

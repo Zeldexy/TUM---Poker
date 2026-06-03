@@ -53,6 +53,9 @@ class HandHistoryLogger:
         self.current_hand["winners"] = winners
         self.current_hand["pot"] = pot
 
+        # Per-table logs live in a subdirectory (e.g. hand_histories/<id>.jsonl);
+        # make sure it exists before the first append.
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
         with self.filepath.open("a", encoding="utf-8") as file:
             file.write(json.dumps(self.current_hand) + "\n")
 

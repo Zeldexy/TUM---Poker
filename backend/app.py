@@ -178,6 +178,18 @@ async def leave_table(game_id: str, request: LeaveRequest) -> dict:
     return {"ok": True}
 
 
+@app.get("/api/tables/{game_id}/history")
+def table_history(game_id: str) -> dict:
+    table = _require(game_id)
+    return {"game_id": game_id, "hands": table.hand_history()}
+
+
+@app.get("/api/tables/{game_id}/stats")
+def table_stats(game_id: str) -> dict:
+    table = _require(game_id)
+    return {"game_id": game_id, "players": table.stats()}
+
+
 @app.get("/api/stats")
 def stats() -> dict:
     return StatsDashboard().to_dict()
